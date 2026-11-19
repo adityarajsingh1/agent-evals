@@ -8,13 +8,18 @@ I'm building agent-evals to be something like pytest for agents. You write test 
 
 ## Status
 
-Early. Right now this is the package skeleton. The pieces are coming in this order:
+Early. So far there's the package and its data models (`agent_evals/models.py`):
 
-1. data models for test cases, runs and traces
-2. adapters for plain functions, LangChain and OpenAI tool-calling agents, and a parallel test runner
-3. scorers for answers, tool use, hallucinations, plus LLM-as-judge
-4. a results store, a CLI with `compare` for CI, and a dashboard
-5. turning production failures into test cases
+- a **test case** is an input plus whatever should be checked: the expected answer, the tool calls a good trajectory should make, the sources the answer must stick to, and step and cost limits
+- a **trace** records what the agent did: each model call and tool call, with tokens, cost and timing
+- a **run** collects the scores for every case, along with the git commit of the agent under test, so a regression can be traced to a change
+
+The rest is coming in this order:
+
+1. adapters for plain functions, LangChain and OpenAI tool-calling agents, and a parallel test runner
+2. scorers for answers, tool use, hallucinations, plus LLM-as-judge
+3. a results store, a CLI with `compare` for CI, and a dashboard
+4. turning production failures into test cases
 
 ## Development
 
