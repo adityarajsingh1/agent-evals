@@ -26,8 +26,11 @@ The rest is coming in this order:
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
+pre-commit install          # ruff and a few file checks on every commit
 pytest
 ```
+
+CI runs ruff, mypy (strict) and the tests on Python 3.10 to 3.13 for every push and pull request.
 
 ## License
 
