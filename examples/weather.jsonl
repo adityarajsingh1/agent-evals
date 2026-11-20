@@ -1,0 +1,4 @@
+# A tiny dataset for a weather agent. One JSON object per line.
+{"id": "berlin-now", "input": "What's the weather in Berlin right now?", "expected_tools": [{"name": "get_weather", "arguments": {"city": "Berlin"}}], "max_steps": 4, "tags": ["weather"]}
+{"id": "compare", "input": "Is it warmer in Lisbon or Oslo?", "expected_tools": [{"name": "get_weather", "arguments": {"city": "Lisbon"}}, {"name": "get_weather", "arguments": {"city": "Oslo"}}], "expected_output": "Lisbon", "tags": ["weather", "multi-tool"]}
+{"id": "no-tool", "input": "What does 'overcast' mean?", "expected_tools": [], "max_steps": 1, "tags": ["definition"]}
