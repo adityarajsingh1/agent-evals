@@ -52,19 +52,29 @@ Scoring hooks in through `scorers=[...]`. A scorer is anything that takes the ca
 | `numeric` | every number in `expected_output` appears in the answer ("1,234.50 EUR" matches 1234.5) | `rel_tol`, `abs_tol` |
 | `regex` | the answer matches a pattern, given as an option or per case in `metadata.regex` | `pattern`, `ignore_case` |
 | `json_schema` | the answer contains JSON valid against a schema, given as an option or in `metadata.json_schema` (`pip install agent-evals[schema]`) | `schema` |
+| `tools` | the agent called the tools in `expected_tools` (by name), in order if `tools_in_order` is set. `"expected_tools": []` means no tool should be called | `allow_extra` |
+| `tool_args` | the same, and each call has the expected arguments. Only the listed arguments are checked, strings are compared case-insensitively and `"3"` matches `3`. A failure shows the closest call the agent actually made | `allow_extra`, `rel_tol`, `case_sensitive` |
+| `max_steps` | no more than `max_steps` model and tool calls | `limit` (default for cases without one) |
+| `max_cost` | no more than `max_cost_usd`, from the trace | `limit` |
+| `max_latency` | total step time under `metadata.max_latency_ms` | `limit` |
 
 ```python
-from agent_evals.scorers import build_scorers
+from agent_evals.scorers import build_scorers, default_scorers
 
-scorers = build_scorers(["contains", {"name": "numeric", "rel_tol": 0.01}])
+scorers = build_scorers(["contains", {"name": "numeric", "rel_tol": 0.01}, "tool_args"])
 run = run_eval_sync(agent, cases, scorers)
+
+# or the defaults: contains, tool_args, max_steps and max_cost
+run = run_eval_sync(agent, cases, default_scorers())
 ```
+
+A failing trajectory says what went wrong. For example, `missing get_weather(city='Oslo') (closest call: get_weather(city='Lisbon'))`.
 
 A new scorer is a subclass of `BaseScorer` with a `name` and a `score()` method, registered with `@register`. A scorer in another package is registered through the `agent_evals.scorers` entry point group, so it shows up by name without any change here.
 
 The rest is coming in this order:
 
-1. scorers for tool use, hallucinations, plus LLM-as-judge
+1. hallucination detection against the sources, and LLM-as-judge with rubrics
 2. a results store, a CLI with `compare` for CI, and a dashboard
 3. turning production failures into test cases
 
