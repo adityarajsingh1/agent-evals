@@ -39,11 +39,32 @@ for case in run.cases:
     print(case.case_id, [c.name for c in case.result.trace.tool_calls], case.result.output)
 ```
 
-Each `Run` records the agent, the dataset, the git commit and every trace. Scoring hooks in through `scorers=[...]`: any function that takes the case and the result and returns a `Score`. The built-in scorers are the next step.
+Each `Run` records the agent, the dataset, the git commit and every trace.
+
+### Scorers
+
+Scoring hooks in through `scorers=[...]`. A scorer is anything that takes the case and the result and returns a `Score` (0 to 1, pass or fail, and a reason). Scorers that need something a case doesn't have, like an expected answer, skip that case. That way one list of scorers works for a whole dataset. The built-in ones, by name:
+
+| Name | Checks | Options |
+|---|---|---|
+| `exact` | the answer equals `expected_output`, after normalising case, punctuation and articles | `normalized` |
+| `contains` | `expected_output` appears in the answer as whole words | |
+| `numeric` | every number in `expected_output` appears in the answer ("1,234.50 EUR" matches 1234.5) | `rel_tol`, `abs_tol` |
+| `regex` | the answer matches a pattern, given as an option or per case in `metadata.regex` | `pattern`, `ignore_case` |
+| `json_schema` | the answer contains JSON valid against a schema, given as an option or in `metadata.json_schema` (`pip install agent-evals[schema]`) | `schema` |
+
+```python
+from agent_evals.scorers import build_scorers
+
+scorers = build_scorers(["contains", {"name": "numeric", "rel_tol": 0.01}])
+run = run_eval_sync(agent, cases, scorers)
+```
+
+A new scorer is a subclass of `BaseScorer` with a `name` and a `score()` method, registered with `@register`. A scorer in another package is registered through the `agent_evals.scorers` entry point group, so it shows up by name without any change here.
 
 The rest is coming in this order:
 
-1. scorers for answers, tool use, hallucinations, plus LLM-as-judge
+1. scorers for tool use, hallucinations, plus LLM-as-judge
 2. a results store, a CLI with `compare` for CI, and a dashboard
 3. turning production failures into test cases
 
