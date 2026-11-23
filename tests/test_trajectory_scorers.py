@@ -74,3 +74,42 @@ def test_not_applied_without_expectations():
 def test_empty_trace(ordered):
     result = get_scorer("tools")(case(("search", {}), ordered=ordered), trace())
     assert result.value == 0.0 and not result.passed
+
+
+@pytest.mark.parametrize(
+    "expected, actual, ok",
+    [
+        ({"city": "Berlin"}, {"city": " berlin ", "units": "metric"}, True),
+        ({"city": "Berlin"}, {"town": "Berlin"}, False),
+        ({"qty": 3}, {"qty": "3"}, True),
+        ({"price": 9.99}, {"price": 9.990000001}, True),
+        ({"price": 9.99}, {"price": 10}, False),
+        ({"tags": ["a", "b"]}, {"tags": ["A", "b"]}, True),
+        ({"tags": ["a", "b"]}, {"tags": ["a"]}, False),
+        ({"filter": {"year": 2024}}, {"filter": {"year": 2024, "lang": "en"}}, True),
+        ({"dry_run": True}, {"dry_run": 1}, False),
+        ({"qty": 3}, {"qty": "three"}, False),
+        ({"q": None}, {"q": None}, True),
+    ],
+)
+def test_values_match(expected, actual, ok):
+    from agent_evals.scorers.trajectory import values_match
+
+    assert values_match(expected, actual) is ok
+
+
+def test_tool_args_scorer():
+    c = case(("get_weather", {"city": "Berlin"}), ("get_weather", {"city": "Oslo"}))
+    scorer = get_scorer("tool_args")
+    assert scorer(
+        c, trace(("get_weather", {"city": "oslo"}), ("get_weather", {"city": "Berlin", "units": "c"}))
+    ).passed
+
+    wrong = scorer(c, trace(("get_weather", {"city": "Berlin"}), ("get_weather", {"city": "Lisbon"})))
+    assert wrong.value == 0.5 and not wrong.passed
+    assert wrong.reason == "missing get_weather(city='Oslo') (closest call: get_weather(city='Lisbon'))"
+
+
+def test_tool_args_case_sensitive():
+    c = case(("lookup", {"sku": "AB-1"}))
+    assert not get_scorer("tool_args", case_sensitive=True)(c, trace(("lookup", {"sku": "ab-1"}))).passed
