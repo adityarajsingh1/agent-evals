@@ -19,8 +19,9 @@ from typing import Any
 from agent_evals.agents import Agent
 from agent_evals.models import AgentResult, CaseResult, Run, Score, TestCase
 
-# Takes the case and what the agent produced, returns a verdict. The built-in scorers come with
-# their own module; any function with this shape works.
+# Takes the case and what the agent produced, returns a verdict. The built-in scorers in
+# agent_evals.scorers have this shape, and so does any plain function. A scorer with an
+# `applies_to(case)` method is skipped on cases it returns False for.
 Scorer = Callable[[TestCase, AgentResult], "Score | Awaitable[Score]"]
 
 
@@ -56,6 +57,9 @@ async def run_case(
     # an agent that errored has nothing to score; the case fails on the error alone
     if result.error is None:
         for scorer in scorers:
+            applies = getattr(scorer, "applies_to", None)
+            if applies is not None and not applies(case):
+                continue
             try:
                 scores.append(await _score(scorer, case, result))
             except Exception as e:
