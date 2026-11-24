@@ -54,6 +54,7 @@ Scoring hooks in through `scorers=[...]`. A scorer is anything that takes the ca
 | `json_schema` | the answer contains JSON valid against a schema, given as an option or in `metadata.json_schema` (`pip install agent-evals[schema]`) | `schema` |
 | `tools` | the agent called the tools in `expected_tools` (by name), in order if `tools_in_order` is set. `"expected_tools": []` means no tool should be called | `allow_extra` |
 | `tool_args` | the same, and each call has the expected arguments. Only the listed arguments are checked, strings are compared case-insensitively and `"3"` matches `3`. A failure shows the closest call the agent actually made | `allow_extra`, `rel_tol`, `case_sensitive` |
+| `groundedness` | the share of the answer's claims that `sources` (and, by default, the agent's own tool results) back up. Fails below `threshold` and lists the unsupported claims | `threshold`, `min_coverage`, `include_tool_results`, `checker` |
 | `max_steps` | no more than `max_steps` model and tool calls | `limit` (default for cases without one) |
 | `max_cost` | no more than `max_cost_usd`, from the trace | `limit` |
 | `max_latency` | total step time under `metadata.max_latency_ms` | `limit` |
@@ -70,11 +71,23 @@ run = run_eval_sync(agent, cases, default_scorers())
 
 A failing trajectory says what went wrong. For example, `missing get_weather(city='Oslo') (closest call: get_weather(city='Lisbon'))`.
 
+### Hallucinations
+
+`groundedness` splits the answer into claims (sentences and list items, minus filler like "Let me know if you need anything else" and questions) and checks each one against the sources. The default checker is lexical and needs no model. A claim counts as supported when a source passage (a sentence, or two neighbouring sentences) contains most of its content words and **every** number in it. For a refund-policy source that says "Refunds are available within 30 days of purchase":
+
+```
+Refunds are available within 30 days of purchase.   supported
+Refunds take 5 business days.                        unsupported (number not in sources: 5)
+Refunds are available within 60 days of purchase.    unsupported (number not in sources: 60)
+```
+
+That catches the hallucinations that hurt most in agent answers: invented figures, dates, names and products. It's cheap enough to run on every commit. It doesn't understand paraphrase or contradictions phrased with the same words. `checker=` takes anything with a `check(claim, sources)` method, so a model-based checker can replace it.
+
 A new scorer is a subclass of `BaseScorer` with a `name` and a `score()` method, registered with `@register`. A scorer in another package is registered through the `agent_evals.scorers` entry point group, so it shows up by name without any change here.
 
 The rest is coming in this order:
 
-1. hallucination detection against the sources, and LLM-as-judge with rubrics
+1. model-based claim checking, and LLM-as-judge with rubrics
 2. a results store, a CLI with `compare` for CI, and a dashboard
 3. turning production failures into test cases
 
