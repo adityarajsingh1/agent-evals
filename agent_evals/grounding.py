@@ -8,19 +8,20 @@ the unsupported claims are what to look at, because they're where the agent made
 The built-in `LexicalChecker` needs no model. It counts a claim as supported when a source
 passage contains most of the claim's content words and *every* number in it. That catches the
 common hallucinations in agent answers (an invented figure, date, name or product) and runs in
-CI for free. It doesn't understand paraphrase or subtle contradictions; for those, plug in a
-model-based checker.
+CI for free. It doesn't understand paraphrase or subtle contradictions; for those there's
+`LLMChecker`, and `LLMClaimExtractor` splits answers into one-fact claims.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from agent_evals.llm import TextModel
 from agent_evals.models import Source
-from agent_evals.text import extract_numbers
+from agent_evals.text import extract_numbers, normalize
 
 # words that carry no claim on their own
 _STOPWORD_LIST = """
@@ -121,6 +122,93 @@ class LexicalChecker:
         return best
 
 
+def _parse_json(text: str) -> object:
+    # imported here to keep grounding usable without pulling in the scorer modules
+    from agent_evals.scorers.structure import extract_json
+
+    return extract_json(text)
+
+
+CHECK_PROMPT = """You are checking whether a claim is supported by the sources below.
+
+Sources:
+{sources}
+
+Claim: {claim}
+
+Answer with JSON only:
+{{"verdict": "supported" | "contradicted" | "not_found",
+  "source_id": "<id of the source that decides it, or null>",
+  "quote": "<the exact sentence from that source, or null>"}}
+
+"supported" means the sources state it (paraphrase is fine). "contradicted" means a source says
+otherwise. "not_found" means the sources don't say. Don't use outside knowledge."""
+
+
+class LLMChecker:
+    """Asks a model whether the sources support a claim.
+
+    The model has to quote the passage it relied on, and a quote that isn't actually in that source
+    makes the verdict unsupported. That keeps the checker from hallucinating support itself.
+    """
+
+    def __init__(self, model: TextModel, prompt: str = CHECK_PROMPT) -> None:
+        self.model = model
+        self.prompt = prompt
+
+    def check(self, claim: str, sources: Sequence[Source]) -> Verdict:
+        listing = "\n\n".join(f"[{s.id}] {s.text}" for s in sources)
+        reply = self.model.complete(self.prompt.format(sources=listing, claim=claim))
+        try:
+            data = _parse_json(reply)
+            if not isinstance(data, dict):
+                raise ValueError("not an object")
+            verdict = str(data.get("verdict", "")).lower()
+        except ValueError:
+            return Verdict(claim, False, 0.0, reason=f"couldn't read the checker's reply: {reply[:80]!r}")
+
+        source_id = data.get("source_id") or None
+        quote = data.get("quote") or None
+        if verdict != "supported":
+            label = {"contradicted": "contradicted by sources", "not_found": "not in sources"}
+            return Verdict(claim, False, 0.0, source_id, quote, label.get(verdict, f"verdict {verdict!r}"))
+
+        source = next((s for s in sources if s.id == source_id), None)
+        if source is None:
+            return Verdict(claim, False, 0.0, None, quote, f"checker cited unknown source {source_id!r}")
+        if quote and normalize(quote) not in normalize(source.text):
+            return Verdict(claim, False, 0.0, source.id, quote, "checker's quote isn't in the source")
+        return Verdict(claim, True, 1.0, source.id, quote)
+
+
+EXTRACT_PROMPT = """Break this answer into short, self-contained factual claims, one fact each.
+Resolve pronouns ("it" -> what it refers to). Leave out greetings, questions, opinions and offers
+to help. Reply with a JSON list of strings only.
+
+Answer:
+{answer}"""
+
+
+class LLMClaimExtractor:
+    """Splits an answer into atomic claims with a model, falling back to `split_claims` if the reply
+    isn't a JSON list. Atomic claims make the score finer: "Refunds take 30 days and include
+    shipping" is one sentence but two facts, one of which may be wrong."""
+
+    def __init__(self, model: TextModel, prompt: str = EXTRACT_PROMPT) -> None:
+        self.model = model
+        self.prompt = prompt
+
+    def __call__(self, answer: str) -> list[str]:
+        reply = self.model.complete(self.prompt.format(answer=answer))
+        try:
+            claims = _parse_json(reply)
+        except ValueError:
+            return split_claims(answer)
+        if not isinstance(claims, list) or not all(isinstance(c, str) for c in claims):
+            return split_claims(answer)
+        return [c.strip() for c in claims if c.strip()]
+
+
 @dataclass
 class GroundingReport:
     verdicts: list[Verdict]
@@ -138,7 +226,10 @@ class GroundingReport:
 
 
 def check_grounding(
-    answer: str, sources: Sequence[Source], checker: ClaimChecker | None = None
+    answer: str,
+    sources: Sequence[Source],
+    checker: ClaimChecker | None = None,
+    extract: Callable[[str], list[str]] = split_claims,
 ) -> GroundingReport:
     checker = checker or LexicalChecker()
-    return GroundingReport([checker.check(claim, sources) for claim in split_claims(answer)])
+    return GroundingReport([checker.check(claim, sources) for claim in extract(answer)])

@@ -81,13 +81,23 @@ Refunds take 5 business days.                        unsupported (number not in 
 Refunds are available within 60 days of purchase.    unsupported (number not in sources: 60)
 ```
 
-That catches the hallucinations that hurt most in agent answers: invented figures, dates, names and products. It's cheap enough to run on every commit. It doesn't understand paraphrase or contradictions phrased with the same words. `checker=` takes anything with a `check(claim, sources)` method, so a model-based checker can replace it.
+That catches the hallucinations that hurt most in agent answers: invented figures, dates, names and products. It's cheap enough to run on every commit. It doesn't understand paraphrase or contradictions phrased with the same words. For those, pass a model and claims are checked by it instead:
+
+```python
+from agent_evals.llm import OpenAIChatModel
+from agent_evals.scorers import get_scorer
+
+judge = OpenAIChatModel(openai.OpenAI(), "gpt-4o-mini")
+groundedness = get_scorer("groundedness", model=judge, extract_with_model=True)
+```
+
+The model labels each claim supported, contradicted or not found, and it has to quote the passage it relied on. If the quote isn't really in that source, the claim counts as unsupported, so the checker can't make up support of its own. `extract_with_model=True` also has the model split answers into one-fact claims. "Refunds take 30 days and include shipping" is one sentence but two facts. A model is anything with `complete(prompt) -> str` (`FunctionModel` wraps a plain function), and `checker=` takes any object with a `check(claim, sources)` method.
 
 A new scorer is a subclass of `BaseScorer` with a `name` and a `score()` method, registered with `@register`. A scorer in another package is registered through the `agent_evals.scorers` entry point group, so it shows up by name without any change here.
 
 The rest is coming in this order:
 
-1. model-based claim checking, and LLM-as-judge with rubrics
+1. LLM-as-judge with rubrics, and a check of how well the judge agrees with human labels
 2. a results store, a CLI with `compare` for CI, and a dashboard
 3. turning production failures into test cases
 

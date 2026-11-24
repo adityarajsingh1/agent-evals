@@ -3,8 +3,17 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 
-from agent_evals.grounding import ClaimChecker, LexicalChecker, check_grounding
+from agent_evals.grounding import (
+    ClaimChecker,
+    LexicalChecker,
+    LLMChecker,
+    LLMClaimExtractor,
+    check_grounding,
+    split_claims,
+)
+from agent_evals.llm import TextModel
 from agent_evals.models import AgentResult, Score, Source, TestCase
 from agent_evals.scorers.base import BaseScorer, register
 
@@ -31,11 +40,24 @@ class Groundedness(BaseScorer):
         min_coverage: float = 0.7,
         include_tool_results: bool = True,
         checker: ClaimChecker | None = None,
+        model: TextModel | None = None,
+        extract_with_model: bool = False,
     ) -> None:
-        """`threshold` is the share of claims that must be supported for the case to pass."""
+        """`threshold` is the share of claims that must be supported for the case to pass.
+
+        Pass `model` to check claims with it (`LLMChecker`) instead of the lexical checker, and
+        `extract_with_model=True` to also have it split answers into one-fact claims.
+        """
+        if extract_with_model and model is None:
+            raise ValueError("extract_with_model needs a model")
         self.threshold = threshold
         self.include_tool_results = include_tool_results
-        self.checker = checker or LexicalChecker(min_coverage=min_coverage)
+        if checker is None:
+            checker = LLMChecker(model) if model is not None else LexicalChecker(min_coverage=min_coverage)
+        self.checker = checker
+        self.extract: Callable[[str], list[str]] = split_claims
+        if extract_with_model and model is not None:
+            self.extract = LLMClaimExtractor(model)
 
     def applies_to(self, case: TestCase) -> bool:
         return bool(case.sources)
@@ -49,7 +71,7 @@ class Groundedness(BaseScorer):
         if not sources:
             return self.result(0.0, False, "no sources to check against")
 
-        report = check_grounding(result.output, sources, self.checker)
+        report = check_grounding(result.output, sources, self.checker, self.extract)
         value = report.groundedness
         if not report.verdicts:
             return self.result(1.0, True, "no factual claims")

@@ -37,7 +37,13 @@ def git_commit(cwd: str | Path | None = None) -> str | None:
 
 
 async def _score(scorer: Scorer, case: TestCase, result: AgentResult) -> Score:
-    score = scorer(case, result)
+    # an async function, or an object whose __call__ is async
+    if inspect.iscoroutinefunction(scorer) or inspect.iscoroutinefunction(type(scorer).__call__):
+        score = scorer(case, result)
+    else:
+        # sync scorers run in a thread: model-based ones block on network calls, and the other
+        # cases should keep running meanwhile
+        score = await asyncio.to_thread(scorer, case, result)
     if inspect.isawaitable(score):
         score = await score
     return score
