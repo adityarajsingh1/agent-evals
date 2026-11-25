@@ -113,13 +113,27 @@ custom = get_scorer("judge", model=judge, threshold=0.8, rubric={
 
 The built-in rubrics are `correctness` (uses `expected_output` as a reference when there is one), `helpfulness` and `safety`. The judge sees the question, the reference, the answer and the tool calls. If its reply can't be read, the case fails with the reason instead of passing silently. `samples=3` asks three times and averages, and the reason shows the spread, a quick way to see how noisy a judge is.
 
+#### Can you trust the judge?
+
+A judge is a model too, and one that passes answers a person would fail makes a broken agent look healthy. So before gating CI on a judge, run it on answers people have already labelled:
+
+```python
+from agent_evals.calibration import calibrate, load_labels
+
+report = calibrate(correctness, load_labels("examples/judge_labels.jsonl"))
+print(report.summary())
+for d in report.disagreements:
+    print(d.case_id, "human:", d.human_passed, "judge:", d.judge.reason)
+```
+
+The report has accuracy, Cohen's kappa (agreement beyond chance, which matters when most answers are good), the **false pass rate** (bad answers the judge let through), the false fail rate, and the mean score error when the labels include a score. `report.trustworthy()` is a rule of thumb: kappa of at least 0.6 and no more than 10% of bad answers passed. [examples/judge_labels.jsonl](examples/judge_labels.jsonl) has eight labelled refund answers to show the format. A real calibration set should be a few hundred answers from your own agent.
+
 A new scorer is a subclass of `BaseScorer` with a `name` and a `score()` method, registered with `@register`. A scorer in another package is registered through the `agent_evals.scorers` entry point group, so it shows up by name without any change here.
 
 The rest is coming in this order:
 
-1. a check of how well the judge agrees with human labels
-2. a results store, a CLI with `compare` for CI, and a dashboard
-3. turning production failures into test cases
+1. a results store, a CLI with `compare` for CI, and a dashboard
+2. turning production failures into test cases
 
 ## Development
 
