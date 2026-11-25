@@ -130,9 +130,25 @@ The report has accuracy, Cohen's kappa (agreement beyond chance, which matters w
 
 A new scorer is a subclass of `BaseScorer` with a `name` and a `score()` method, registered with `@register`. A scorer in another package is registered through the `agent_evals.scorers` entry point group, so it shows up by name without any change here.
 
+### Run history
+
+`ResultStore` keeps runs in SQLite (`.agent-evals/results.sqlite` by default). Each run's summary, its cases and every score are stored as rows, so history queries are cheap. The full run, traces included, is kept too:
+
+```python
+from agent_evals.store import ResultStore
+
+with ResultStore() as store:
+    store.save(run)
+    previous = store.latest_run(run.agent, run.dataset, before=run.id)
+    store.score_history("groundedness", run.agent, run.dataset)   # [(started_at, mean), ...]
+    store.case_history("berlin-now", run.agent, run.dataset)      # did this case pass at each commit?
+```
+
+Runs can be looked up by an id prefix, like a short git hash. Every run records the git commit of the agent under test, so when a case starts failing, the history shows the commit where it changed.
+
 The rest is coming in this order:
 
-1. a results store, a CLI with `compare` for CI, and a dashboard
+1. a CLI with `compare` for CI, and a dashboard
 2. turning production failures into test cases
 
 ## Development
