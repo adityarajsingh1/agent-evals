@@ -176,10 +176,24 @@ agent-evals compare --max-score-drop 0.05 --max-cost-increase 0.2
 
 `--max-regressions N` allows some newly failing cases, `--max-score-drop` fails when any scorer's average falls by more than that, and `--max-cost-increase 0.2` fails on a 20% cost rise. `-f markdown` writes the same thing as a table for the PR.
 
-The rest is coming in this order:
+### Dashboard
 
-1. a dashboard
-2. turning production failures into test cases
+```bash
+pip install "agent-evals[dashboard]"
+agent-evals dashboard
+```
+
+It opens a Streamlit app on the same results store, with three views:
+
+- **Trends**: pass rate, hallucination rate (when groundedness is scored), each scorer's average and cost per run for one agent and dataset.
+- **Run**: the failing cases of a run, each with why it failed, the answer, the scores and the full trace.
+- **Case**: how one case did across runs and commits, with a warning when it keeps flipping between pass and fail, which usually means it's flaky rather than broken.
+
+![The Trends view after four runs of the example agent, one of them broken](docs/dashboard.png)
+
+Runs are grouped by agent name, so use `agent-evals run -n weather-bot ...` to keep runs of different versions of an agent on the same chart.
+
+What's left is turning production failures into test cases.
 
 ## Development
 
