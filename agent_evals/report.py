@@ -6,7 +6,12 @@ short lines, and keeps long reasons truncated.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from agent_evals.models import CaseResult, Run
+
+if TYPE_CHECKING:
+    from agent_evals.compare import Comparison
 
 
 def score_names(run: Run) -> list[str]:
@@ -86,3 +91,70 @@ def render_markdown(run: Run, show_all: bool = False, limit: int = 50) -> str:
         if len(shown) > limit:
             lines.append(f"\n…and {len(shown) - limit} more.")
     return "\n".join(lines) + "\n"
+
+
+def _mean(x: float | None) -> str:
+    return "–" if x is None else f"{x:.3f}"
+
+
+def _delta(x: float | None) -> str:
+    return "" if x is None or abs(x) < 5e-4 else f"{x:+.3f}"
+
+
+def render_comparison_text(cmp: Comparison, problems: list[str]) -> str:
+    b, h = cmp.base, cmp.head
+    lines = [
+        f"{b.id} -> {h.id}: pass rate {b.pass_rate:.1%} -> {h.pass_rate:.1%} ({cmp.pass_rate_delta:+.1%}), "
+        f"cost ${b.cost_usd:.4f} -> ${h.cost_usd:.4f}",
+    ]
+    for name, (old, new) in cmp.scores.items():
+        lines.append(f"  {name:<14} {_mean(old)} -> {_mean(new)}  {_delta(cmp.score_delta(name))}".rstrip())
+    for label, changes in (("REGRESSED", cmp.regressions), ("FIXED", cmp.fixes)):
+        for c in changes:
+            lines.append(f"  {label} {c.case_id}" + (f": {_short(c.reason)}" if c.reason else ""))
+    if cmp.still_failing:
+        lines.append(f"  {len(cmp.still_failing)} case(s) still failing")
+    if cmp.added or cmp.removed:
+        lines.append(f"  {len(cmp.added)} new case(s), {len(cmp.removed)} removed")
+    lines.append("FAIL: " + "; ".join(problems) if problems else "OK: no regressions")
+    return "\n".join(lines)
+
+
+def render_comparison_markdown(cmp: Comparison, problems: list[str]) -> str:
+    b, h = cmp.base, cmp.head
+    head = "❌ Regressions" if problems else "✅ No regressions"
+    lines = [
+        f"### {head}: {h.agent}",
+        "",
+        f"Pass rate **{b.pass_rate:.1%} → {h.pass_rate:.1%}** ({cmp.pass_rate_delta:+.1%}), "
+        f"cost ${b.cost_usd:.4f} → ${h.cost_usd:.4f}. Base run `{b.id}`"
+        + (f" (`{b.git_commit[:10]}`)" if b.git_commit else "")
+        + f", new run `{h.id}`"
+        + (f" (`{h.git_commit[:10]}`)" if h.git_commit else "")
+        + ".",
+        "",
+    ]
+    if problems:
+        lines += [f"- {p}" for p in problems] + [""]
+    if cmp.scores:
+        lines += ["| Scorer | Base | New | Change |", "|---|---|---|---|"]
+        for name, (old, new) in cmp.scores.items():
+            lines.append(f"| {name} | {_mean(old)} | {_mean(new)} | {_delta(cmp.score_delta(name))} |")
+        lines.append("")
+    if cmp.regressions or cmp.fixes:
+        lines += ["| Case | Change | Why it fails now |", "|---|---|---|"]
+        for c in cmp.regressions:
+            lines.append(f"| `{c.case_id}` | **regressed** | {_md_cell(c.reason)} |")
+        for c in cmp.fixes:
+            lines.append(f"| `{c.case_id}` | fixed | |")
+        lines.append("")
+    extra = []
+    if cmp.still_failing:
+        extra.append(f"{len(cmp.still_failing)} still failing")
+    if cmp.added:
+        extra.append(f"{len(cmp.added)} new")
+    if cmp.removed:
+        extra.append(f"{len(cmp.removed)} removed")
+    if extra:
+        lines.append("Other cases: " + ", ".join(extra) + ".")
+    return "\n".join(lines).rstrip() + "\n"

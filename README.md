@@ -161,9 +161,24 @@ The agent is `module:attr` or `file.py:attr`, either an `Agent` or a plain funct
 
 `agent-evals report` shows a saved run: `latest` (the default), `previous`, a run id or prefix, or a file written by `run --json`. Use `-f markdown` for a table you can drop into `$GITHUB_STEP_SUMMARY` or a PR comment, `-f json` for the full run with traces, and `--all` to include passing cases.
 
+`agent-evals compare` is the CI gate. It compares two runs case by case, the previous and latest by default, and exits with 1 when a case that used to pass now fails. A pass rate alone can hide that: fix two cases, break two others, and it doesn't move.
+
+```bash
+# the example agent, then a version that answers the Lisbon/Oslo question without checking the weather
+agent-evals compare --max-score-drop 0.05 --max-cost-increase 0.2
+# c13b6e293555 -> ebf7ace2841f: pass rate 100.0% -> 66.7% (-33.3%), cost $0.0000 -> $0.0000
+#   tool_args      1.000 -> 0.667  -0.333
+#   max_steps      1.000 -> 1.000
+#   contains       1.000 -> 1.000
+#   REGRESSED compare: tool_args: missing get_weather(city='Lisbon'), get_weather(city='Oslo')
+# FAIL: 1 case(s) that passed before now fail; mean tool_args dropped by 0.333 (allowed 0.05)
+```
+
+`--max-regressions N` allows some newly failing cases, `--max-score-drop` fails when any scorer's average falls by more than that, and `--max-cost-increase 0.2` fails on a 20% cost rise. `-f markdown` writes the same thing as a table for the PR.
+
 The rest is coming in this order:
 
-1. a `compare` command that fails CI on regressions, and a dashboard
+1. a dashboard
 2. turning production failures into test cases
 
 ## Development

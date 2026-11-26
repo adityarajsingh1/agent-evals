@@ -141,3 +141,49 @@ def test_report_errors(workdir, capsys):
     assert run("report") == 2
     assert "no latest run" in capsys.readouterr().err
     assert run("report", "abc123") == 2
+
+
+BROKEN_AGENT = """
+def agent(question, rec):
+    if "Lisbon" in question:
+        return "Probably Lisbon."  # forgot to check the weather
+    if "Berlin" in question:
+        rec.tool("get_weather", {"city": "Berlin"}, result={"temp_c": 12})
+        return "It's 12°C in Berlin."
+    return "Overcast means the sky is completely covered by cloud."
+"""
+
+
+def test_compare_exits_1_on_regression(workdir, capsys):
+    Path("examples/broken_agent.py").write_text(BROKEN_AGENT)
+    assert run("run", "examples/weather_agent.py:agent", "examples/weather.jsonl", "-q") == 0
+    assert run("run", "examples/broken_agent.py:agent", "examples/weather.jsonl", "-q") == 0
+    capsys.readouterr()
+
+    assert run("compare") == 1
+    out = capsys.readouterr().out
+    assert "REGRESSED compare: tool_args: missing get_weather(city='Lisbon'), get_weather(city='Oslo')" in out
+    assert out.rstrip().endswith("FAIL: 1 case(s) that passed before now fail")
+
+    assert run("compare", "--max-regressions", "1", "-f", "markdown") == 0
+    assert capsys.readouterr().out.startswith("### ✅ No regressions")
+
+    assert run("compare", "latest", "previous") == 0  # the other way round it's a fix
+    assert "FIXED compare" in capsys.readouterr().out
+
+
+def test_compare_needs_two_runs(workdir, capsys):
+    run("run", "examples/weather_agent.py:agent", "examples/weather.jsonl", "-q")
+    capsys.readouterr()
+    assert run("compare") == 2
+    assert "no previous run" in capsys.readouterr().err
+    assert run("compare", "latest", "latest") == 2
+
+
+def test_agent_with_a_broken_import(workdir, capsys):
+    Path("examples/bad_agent.py").write_text("import not_a_real_package\n\ndef agent(q):\n    return q\n")
+    assert run("run", "examples/bad_agent.py:agent", "examples/weather.jsonl") == 2
+    assert (
+        "importing examples/bad_agent.py failed: No module named 'not_a_real_package'"
+        in capsys.readouterr().err
+    )

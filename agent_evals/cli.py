@@ -22,9 +22,15 @@ from typing import Any
 
 from agent_evals import __version__
 from agent_evals.agents import Agent, FunctionAgent
+from agent_evals.compare import compare_runs
 from agent_evals.dataset import DatasetError, load_dataset
 from agent_evals.models import CaseResult, Run
-from agent_evals.report import render_markdown, render_text
+from agent_evals.report import (
+    render_comparison_markdown,
+    render_comparison_text,
+    render_markdown,
+    render_text,
+)
 from agent_evals.runner import run_eval_sync
 from agent_evals.scorers import DEFAULT_SCORERS, build_scorers
 from agent_evals.store import ResultStore
@@ -51,12 +57,20 @@ def load_object(spec: str) -> Any:
         module_spec = importlib.util.spec_from_file_location(path.stem, path)
         if module_spec is None or module_spec.loader is None:
             raise CLIError(f"can't import {target}")
+        # the file's folder goes on the path so it can import its neighbours, as `python file.py` would
+        sys.path.insert(0, str(path.parent.resolve()))
         module = importlib.util.module_from_spec(module_spec)
         sys.modules[path.stem] = module
-        module_spec.loader.exec_module(module)
+        try:
+            module_spec.loader.exec_module(module)
+        except ImportError as e:
+            raise CLIError(f"importing {target} failed: {e}") from e
     else:
         sys.path.insert(0, str(Path.cwd()))
-        module = importlib.import_module(target)
+        try:
+            module = importlib.import_module(target)
+        except ImportError as e:
+            raise CLIError(f"can't import {target}: {e}") from e
     try:
         return getattr(module, attr)
     except AttributeError:
@@ -165,6 +179,21 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_compare(args: argparse.Namespace) -> int:
+    with ResultStore(args.db) as store:
+        head = resolve_run(store, args.head, args.agent, args.dataset)
+        base = resolve_run(store, args.base, args.agent, args.dataset)
+    if base.id == head.id:
+        raise CLIError(f"both sides are run {base.id}; nothing to compare")
+    cmp = compare_runs(base, head)
+    problems = cmp.gate(args.max_regressions, args.max_score_drop, args.max_cost_increase)
+    if args.format == "markdown":
+        print(render_comparison_markdown(cmp, problems), end="")
+    else:
+        print(render_comparison_text(cmp, problems))
+    return 1 if problems else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-evals", description="Regression tests for AI agents.")
     parser.add_argument("--version", action="version", version=f"agent-evals {__version__}")
@@ -199,6 +228,28 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("-f", "--format", choices=["text", "markdown", "json"], default="text")
     report.add_argument("-a", "--all", action="store_true", help="list passing cases too")
     report.set_defaults(func=cmd_report)
+
+    compare = sub.add_parser("compare", help="compare two runs and exit 1 on regressions")
+    compare.add_argument(
+        "base", nargs="?", default="previous", help="the run to compare against (default previous)"
+    )
+    compare.add_argument("head", nargs="?", default="latest", help="the new run (default latest)")
+    compare.add_argument("--agent", help="with latest/previous: only runs of this agent")
+    compare.add_argument("--dataset", help="with latest/previous: only runs on this dataset")
+    compare.add_argument(
+        "--max-regressions", type=int, default=0, help="newly failing cases allowed (default 0)"
+    )
+    compare.add_argument(
+        "--max-score-drop", type=float, metavar="X", help="fail if any scorer's mean drops by more than this"
+    )
+    compare.add_argument(
+        "--max-cost-increase",
+        type=float,
+        metavar="FRACTION",
+        help="fail if the total cost grows by more than this, e.g. 0.2 for 20%%",
+    )
+    compare.add_argument("-f", "--format", choices=["text", "markdown"], default="text")
+    compare.set_defaults(func=cmd_compare)
     return parser
 
 
