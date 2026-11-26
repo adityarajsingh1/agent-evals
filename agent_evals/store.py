@@ -225,6 +225,14 @@ class ResultStore:
             for r in rows
         ]
 
+    def groups(self) -> list[tuple[str, str, int]]:
+        """Every (agent, dataset) pair with its number of runs, most recently run first."""
+        rows = self._conn.execute(
+            "SELECT agent, dataset, COUNT(*) AS n, MAX(started_at) AS last FROM runs "
+            "GROUP BY agent, dataset ORDER BY last DESC"
+        ).fetchall()
+        return [(r["agent"], r["dataset"], r["n"]) for r in rows]
+
     def delete_run(self, run_id: str) -> None:
         with self._tx() as db:
             db.execute("DELETE FROM runs WHERE id = ?", (run_id,))
