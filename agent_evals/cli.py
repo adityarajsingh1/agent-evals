@@ -130,6 +130,8 @@ def resolve_run(store: ResultStore, ref: str, agent: str | None = None, dataset:
 
 def cmd_run(args: argparse.Namespace) -> int:
     agent = load_agent(args.agent)
+    if args.name:
+        agent.name = args.name
     try:
         cases = load_dataset(args.dataset)
     except (DatasetError, OSError) as e:
@@ -194,6 +196,22 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    try:
+        import streamlit  # noqa: F401
+    except ImportError as e:
+        raise CLIError("the dashboard needs `pip install agent-evals[dashboard]`") from e
+    import os
+    import subprocess
+
+    app = Path(__file__).parent / "dashboard" / "app.py"
+    env = {**os.environ, "AGENT_EVALS_DB": str(Path(args.db).resolve())}
+    cmd = [sys.executable, "-m", "streamlit", "run", str(app), "--server.port", str(args.port)]
+    if args.headless:
+        cmd += ["--server.headless", "true"]
+    return subprocess.call(cmd, env=env)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-evals", description="Regression tests for AI agents.")
     parser.add_argument("--version", action="version", version=f"agent-evals {__version__}")
@@ -203,6 +221,7 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="run an agent over a dataset and score it")
     run.add_argument("agent", help="module:attr or file.py:attr; an Agent, or a function taking the input")
     run.add_argument("dataset", type=Path, help="JSONL file of test cases")
+    run.add_argument("-n", "--name", help="agent name to record (runs are grouped and compared by name)")
     run.add_argument(
         "-s",
         "--scorer",
@@ -250,6 +269,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compare.add_argument("-f", "--format", choices=["text", "markdown"], default="text")
     compare.set_defaults(func=cmd_compare)
+
+    dash = sub.add_parser("dashboard", help="open the Streamlit dashboard over the results store")
+    dash.add_argument("--port", type=int, default=8501)
+    dash.add_argument("--headless", action="store_true", help="don't open a browser")
+    dash.set_defaults(func=cmd_dashboard)
     return parser
 
 

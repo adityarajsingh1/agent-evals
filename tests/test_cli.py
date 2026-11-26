@@ -187,3 +187,13 @@ def test_agent_with_a_broken_import(workdir, capsys):
         "importing examples/bad_agent.py failed: No module named 'not_a_real_package'"
         in capsys.readouterr().err
     )
+
+
+def test_name_groups_versions_of_an_agent(workdir, capsys):
+    Path("examples/broken_agent.py").write_text(BROKEN_AGENT)
+    run("run", "examples/weather_agent.py:agent", "examples/weather.jsonl", "-q", "-n", "weather-bot")
+    run("run", "examples/broken_agent.py:agent", "examples/weather.jsonl", "-q", "-n", "weather-bot")
+    capsys.readouterr()
+    assert run("compare", "--agent", "weather-bot") == 1
+    with ResultStore("results.sqlite") as store:
+        assert store.groups() == [("weather-bot", "examples/weather.jsonl", 2)]
