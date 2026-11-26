@@ -93,3 +93,51 @@ def test_tags(workdir, capsys):
 def test_errors_exit_2(workdir, capsys, args, message):
     assert run(*args) == 2
     assert message in capsys.readouterr().err
+
+
+def test_report_latest_text_markdown_json(workdir, capsys):
+    run(
+        "run",
+        "examples/weather_agent.py:agent",
+        "examples/weather.jsonl",
+        "-s",
+        "contains",
+        "-s",
+        "exact",
+        "-q",
+    )
+    capsys.readouterr()
+
+    assert run("report") == 0
+    text = capsys.readouterr().out
+    assert text.startswith("weather_agent:agent on examples/weather.jsonl: 0/3 passed")
+    assert "FAIL compare: exact: expected 'Lisbon'" in text
+
+    assert run("report", "latest", "-f", "markdown", "--all") == 0
+    md = capsys.readouterr().out
+    assert md.startswith("### ❌ weather_agent:agent: 0/3 passed (0.0%)")
+    assert "| contains | 1.000 | 1 |" in md and "| exact | 0.000 | 1 |" in md
+    assert "| `berlin-now` | **fail** | no scorer applied |" in md
+
+    assert run("report", "latest", "-f", "json") == 0
+    assert len(json.loads(capsys.readouterr().out)["cases"]) == 3
+
+
+def test_report_by_prefix_previous_and_json_file(workdir, capsys):
+    run("run", "examples/weather_agent.py:agent", "examples/weather.jsonl", "-q", "--json", "first.json")
+    run("run", "examples/weather_agent.py:agent", "examples/weather.jsonl", "-q", "-s", "exact")
+    capsys.readouterr()
+    first_id = json.loads(Path("first.json").read_text())["id"]
+
+    assert run("report", "previous") == 0
+    assert f"run {first_id}" in capsys.readouterr().out
+    assert run("report", first_id[:6]) == 0
+    assert "3/3 passed" in capsys.readouterr().out
+    assert run("report", "first.json") == 0
+    assert "3/3 passed" in capsys.readouterr().out
+
+
+def test_report_errors(workdir, capsys):
+    assert run("report") == 2
+    assert "no latest run" in capsys.readouterr().err
+    assert run("report", "abc123") == 2

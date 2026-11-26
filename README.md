@@ -159,9 +159,11 @@ agent-evals run examples/weather_agent.py:agent examples/weather.jsonl
 
 The agent is `module:attr` or `file.py:attr`, either an `Agent` or a plain function. Scorers are picked with `-s name` (repeatable, with options as `-s numeric:rel_tol=0.01`), and the defaults are used when none are given. `-t tag` runs a subset of the cases, and `--fail-under 0.9` exits with 1 below that pass rate. Every run is saved to the results store, unless you pass `--no-save`. [examples/weather_agent.py](examples/weather_agent.py) is a toy agent for trying it out.
 
+`agent-evals report` shows a saved run: `latest` (the default), `previous`, a run id or prefix, or a file written by `run --json`. Use `-f markdown` for a table you can drop into `$GITHUB_STEP_SUMMARY` or a PR comment, `-f json` for the full run with traces, and `--all` to include passing cases.
+
 The rest is coming in this order:
 
-1. `report` and `compare` commands for CI, and a dashboard
+1. a `compare` command that fails CI on regressions, and a dashboard
 2. turning production failures into test cases
 
 ## Development

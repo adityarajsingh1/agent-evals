@@ -24,8 +24,9 @@ from agent_evals import __version__
 from agent_evals.agents import Agent, FunctionAgent
 from agent_evals.dataset import DatasetError, load_dataset
 from agent_evals.models import CaseResult, Run
+from agent_evals.report import render_markdown, render_text
 from agent_evals.runner import run_eval_sync
-from agent_evals.scorers import DEFAULT_SCORERS, BaseScorer, build_scorers
+from agent_evals.scorers import DEFAULT_SCORERS, build_scorers
 from agent_evals.store import ResultStore
 
 DEFAULT_DB = ".agent-evals/results.sqlite"
@@ -97,29 +98,17 @@ def _pct(x: float) -> str:
     return f"{x:.1%}"
 
 
-def print_summary(run: Run, scorers: Sequence[BaseScorer]) -> None:
-    failed = [c for c in run.cases if not c.passed]
-    print(
-        f"\n{run.agent} on {run.dataset}: {len(run.cases) - len(failed)}/{len(run.cases)} passed "
-        f"({_pct(run.pass_rate)}), cost ${run.cost_usd:.4f}, run {run.id}"
-    )
-    for s in scorers:
-        mean = run.mean_score(s.name)
-        if mean is not None:
-            n = sum(1 for c in run.cases if c.score(s.name) is not None)
-            print(f"  {s.name:<14} {mean:.3f}  ({n} cases)")
-    for c in failed[:10]:
-        print(f"  FAIL {c.case_id}: {failure_reason(c)}")
-    if len(failed) > 10:
-        print(f"  ... and {len(failed) - 10} more failing cases")
-
-
-def failure_reason(case: CaseResult) -> str:
-    if case.result.error:
-        return case.result.error
-    if not case.scores:
-        return "no scorer applied"
-    return "; ".join(f"{s.name}: {s.reason or 'failed'}" for s in case.scores if not s.passed)
+def resolve_run(store: ResultStore, ref: str, agent: str | None = None, dataset: str | None = None) -> Run:
+    """A run id (or prefix), `latest`, `previous`, or a JSON file written by `run --json`."""
+    if ref.endswith(".json") and Path(ref).exists():
+        return Run.model_validate_json(Path(ref).read_text(encoding="utf-8"))
+    if ref in {"latest", "previous"}:
+        runs = store.list_runs(agent=agent, dataset=dataset, limit=2)
+        index = 0 if ref == "latest" else 1
+        if len(runs) <= index:
+            raise CLIError(f"no {ref} run in {store.path}")
+        return store.load_run(runs[index].id)
+    return store.load_run(ref)
 
 
 # --- commands ----------------------------------------------------------------------------------
@@ -157,10 +146,22 @@ def cmd_run(args: argparse.Namespace) -> int:
             store.save(run)
     if args.json:
         Path(args.json).write_text(run.model_dump_json(indent=2), encoding="utf-8")
-    print_summary(run, scorers)
+    print("\n" + render_text(run))
     if args.fail_under is not None and run.pass_rate < args.fail_under:
         print(f"\npass rate {_pct(run.pass_rate)} is below --fail-under {_pct(args.fail_under)}")
         return 1
+    return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    with ResultStore(args.db) as store:
+        run = resolve_run(store, args.run, args.agent, args.dataset)
+    if args.format == "json":
+        print(run.model_dump_json(indent=2))
+    elif args.format == "markdown":
+        print(render_markdown(run, show_all=args.all), end="")
+    else:
+        print(render_text(run, show_all=args.all, limit=10**9 if args.all else 20))
     return 0
 
 
@@ -188,6 +189,16 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--no-save", action="store_true", help="don't save the run to the store")
     run.add_argument("-q", "--quiet", action="store_true", help="no progress dots")
     run.set_defaults(func=cmd_run)
+
+    report = sub.add_parser("report", help="show a saved run")
+    report.add_argument(
+        "run", nargs="?", default="latest", help="run id or prefix, latest, previous, or a .json file"
+    )
+    report.add_argument("--agent", help="with latest/previous: only runs of this agent")
+    report.add_argument("--dataset", help="with latest/previous: only runs on this dataset")
+    report.add_argument("-f", "--format", choices=["text", "markdown", "json"], default="text")
+    report.add_argument("-a", "--all", action="store_true", help="list passing cases too")
+    report.set_defaults(func=cmd_report)
     return parser
 
 
