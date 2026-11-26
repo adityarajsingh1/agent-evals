@@ -146,9 +146,22 @@ with ResultStore() as store:
 
 Runs can be looked up by an id prefix, like a short git hash. Every run records the git commit of the agent under test, so when a case starts failing, the history shows the commit where it changed.
 
+### Command line
+
+```bash
+agent-evals run examples/weather_agent.py:agent examples/weather.jsonl
+# ...
+# weather_agent:agent on examples/weather.jsonl: 3/3 passed (100.0%), cost $0.0000, run 47a7cbd4c3df
+#   contains       1.000  (1 cases)
+#   tool_args      1.000  (3 cases)
+#   max_steps      1.000  (2 cases)
+```
+
+The agent is `module:attr` or `file.py:attr`, either an `Agent` or a plain function. Scorers are picked with `-s name` (repeatable, with options as `-s numeric:rel_tol=0.01`), and the defaults are used when none are given. `-t tag` runs a subset of the cases, and `--fail-under 0.9` exits with 1 below that pass rate. Every run is saved to the results store, unless you pass `--no-save`. [examples/weather_agent.py](examples/weather_agent.py) is a toy agent for trying it out.
+
 The rest is coming in this order:
 
-1. a CLI with `compare` for CI, and a dashboard
+1. `report` and `compare` commands for CI, and a dashboard
 2. turning production failures into test cases
 
 ## Development

@@ -82,7 +82,7 @@ class FunctionAgent:
 
     def __init__(self, fn: AgentFn, name: str | None = None) -> None:
         self.fn = fn
-        self.name = name or getattr(fn, "__name__", "agent")
+        self.name: str = name or str(getattr(fn, "__name__", "agent"))
         self._wants_recorder = len(inspect.signature(fn).parameters) >= 2
 
     async def run(self, case: TestCase) -> AgentResult:
