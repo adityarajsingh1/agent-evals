@@ -1,0 +1,5 @@
+{"input": "Is it colder in Berlin or Oslo?", "kind": "correction", "output": "Berlin is warmer: Berlin 12°C, Oslo 2°C.", "correction": "Oslo", "comment": "asked which is colder", "created_at": "2026-11-24T08:12:00Z"}
+{"input": "What's the weather in Munich?", "kind": "thumbs_down", "output": "Overcast means the sky is completely covered by cloud.", "expected_tools": [{"name": "get_weather", "arguments": {"city": "Munich"}}], "created_at": "2026-11-24T09:40:00Z"}
+{"input": "Will it rain in Lisbon tomorrow?", "kind": "thumbs_down", "output": "It's 19°C in Lisbon.", "created_at": "2026-11-24T10:05:00Z"}
+{"input": "will it rain in lisbon tomorrow", "kind": "thumbs_down", "output": "It's 19°C in Lisbon.", "comment": "didn't answer the question", "created_at": "2026-11-25T14:30:00Z"}
+{"input": "What's the weather in Berlin right now?", "kind": "thumbs_down", "output": "It's 12°C in Berlin.", "comment": "feels colder", "created_at": "2026-11-25T16:02:00Z"}

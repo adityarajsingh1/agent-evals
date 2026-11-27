@@ -4,7 +4,7 @@ Regression tests for AI agents.
 
 Agents break quietly. Someone tweaks a prompt or switches the model, and the agent starts calling the wrong tool, passing the wrong arguments, or answering confidently from nothing. Unit tests don't catch it because the code didn't change, and the first people to notice are usually users.
 
-I'm building agent-evals to be something like pytest for agents. You write test cases (an input plus what a good answer and a good trajectory look like), run your agent over them in CI, and get a failing build when accuracy, tool use, groundedness or cost gets worse than the last good run. Later on, real production failures get turned into new test cases, so the suite grows from what actually went wrong.
+I'm building agent-evals to be something like pytest for agents. You write test cases (an input plus what a good answer and a good trajectory look like), run your agent over them in CI, and get a failing build when accuracy, tool use, groundedness or cost gets worse than the last good run. Real production failures get turned into new test cases, so the suite grows from what actually went wrong.
 
 ## Status
 
@@ -193,7 +193,39 @@ It opens a Streamlit app on the same results store, with three views:
 
 Runs are grouped by agent name, so use `agent-evals run -n weather-bot ...` to keep runs of different versions of an agent on the same chart.
 
-What's left is turning production failures into test cases.
+### From production failures to test cases
+
+The best test cases are the questions real users got bad answers to. So in production, log what went wrong to a feedback file: a thumbs-down, a user correcting the answer, or the agent crashing.
+
+```python
+from agent_evals.feedback import FeedbackLog
+
+log = FeedbackLog("feedback.jsonl")
+
+# a user said the answer was wrong and gave the right one
+log.record("Is it colder in Berlin or Oslo?", "correction", output=answer, correction="Oslo")
+# a thumbs-down, or a crash (an AgentResult with an error is logged as kind="error")
+log.record_result(question, result, comment="didn't answer the question")
+```
+
+It's an append-only JSONL file, so several workers can write to it and there's no service to run. Pass `sources=` with the documents the agent was given and the new case will check groundedness too, and `expected_tools=` when a reviewer knows which tool should have been called.
+
+Then turn the log into test cases:
+
+```bash
+agent-evals feedback examples/feedback.jsonl --into examples/weather.jsonl
+# 5 feedback record(s), 3 new input(s)
+#   1 skipped, already covered by examples/weather.jsonl or the drafts
+#   ready: added 2 to examples/weather.jsonl
+#     fb-db7397dcb7  x1  Is it colder in Berlin or Oslo?
+#     fb-5123838eeb  x1  What's the weather in Munich?
+#   drafts: added 1 to examples/weather.drafts.jsonl
+#     fb-6b6d28a906  x2  Will it rain in Lisbon tomorrow?
+```
+
+Reports of the same question (ignoring case and punctuation) become one case, and `x2` is how many times it came up, so the most common problems are at the top. A correction says what the right answer is, so it becomes a case straight away. A thumbs-down only says the answer was wrong, so it goes to a drafts file until someone writes down what a good answer looks like. Questions the dataset already has are skipped, and so are drafts nobody has finished yet, so running it every day is safe. Each case keeps the bad answer, the comment and when it was first reported in its `metadata`.
+
+With the two new cases, the example agent drops to 4/5: it never looks up the weather for Munich, because it only knows three cities.
 
 ## Development
 

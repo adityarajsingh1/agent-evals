@@ -184,7 +184,8 @@ def to_test_cases(feedback: Iterable[Feedback], existing: Iterable[TestCase] = (
         if not best.expected_tools:
             tools = next((f.expected_tools for f in items if f.expected_tools), [])
             best = best.model_copy(update={"expected_tools": tools})
-        case = _to_case(best, case_id, len(items))
+        # keep the wording of the first report, so the id and the input agree
+        case = _to_case(best.model_copy(update={"input": items[0].input}), case_id, len(items))
         case.metadata["first_seen"] = items[0].created_at.isoformat()
         if case.expected_output is not None or case.expected_tools:
             out.ready.append(case)

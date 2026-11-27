@@ -197,3 +197,33 @@ def test_name_groups_versions_of_an_agent(workdir, capsys):
     assert run("compare", "--agent", "weather-bot") == 1
     with ResultStore("results.sqlite") as store:
         assert store.groups() == [("weather-bot", "examples/weather.jsonl", 2)]
+
+
+def test_feedback_adds_ready_cases_and_drafts(workdir, capsys):
+    assert run("feedback", "examples/feedback.jsonl", "--into", "examples/weather.jsonl", "--dry-run") == 0
+    out = capsys.readouterr().out
+    assert "5 feedback record(s), 3 new input(s)" in out
+    assert "1 skipped" in out  # the Berlin question is already in the dataset
+    assert "would add 2 to examples/weather.jsonl" in out
+    assert "x2  Will it rain in Lisbon tomorrow?" in out
+    assert len(Path("examples/weather.jsonl").read_text().splitlines()) == 4
+
+    assert run("feedback", "examples/feedback.jsonl", "--into", "examples/weather.jsonl") == 0
+    out = capsys.readouterr().out
+    assert "Fill in expected_output" in out
+    assert len(Path("examples/weather.drafts.jsonl").read_text().splitlines()) == 1
+
+    # importing the same log again adds nothing: everything is in the dataset or the drafts
+    assert run("feedback", "examples/feedback.jsonl", "--into", "examples/weather.jsonl") == 0
+    assert "4 skipped" in capsys.readouterr().out
+    assert len(Path("examples/weather.jsonl").read_text().splitlines()) == 6
+
+    # the new cases run, and the toy agent fails the Munich one: it never looks up the weather
+    assert run("run", "examples/weather_agent.py:agent", "examples/weather.jsonl", "-q") == 0
+    out = capsys.readouterr().out
+    assert "4/5 passed" in out
+
+
+def test_feedback_missing_log(workdir, capsys):
+    assert run("feedback", "nope.jsonl", "--into", "examples/weather.jsonl") == 2
+    assert "no such file" in capsys.readouterr().err

@@ -212,6 +212,39 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     return subprocess.call(cmd, env=env)
 
 
+def cmd_feedback(args: argparse.Namespace) -> int:
+    from agent_evals.dataset import load_dataset
+    from agent_evals.feedback import FeedbackLog, to_test_cases, write_cases
+
+    if not args.log.exists():
+        raise CLIError(f"{args.log}: no such file")
+    items = FeedbackLog(args.log).read()
+    existing = load_dataset(args.into) if args.into.exists() and args.into.stat().st_size else []
+    drafts_path: Path = args.drafts or args.into.with_name(args.into.stem + ".drafts.jsonl")
+    if drafts_path.exists() and drafts_path.stat().st_size:
+        # drafts someone hasn't finished yet shouldn't be added a second time
+        existing += load_dataset(drafts_path)
+    out = to_test_cases(items, existing)
+
+    print(f"{len(items)} feedback record(s), {len(out.ready) + len(out.drafts)} new input(s)")
+    if out.duplicates:
+        print(f"  {len(out.duplicates)} skipped, already covered by {args.into} or the drafts")
+    for label, cases, path in (("ready", out.ready, args.into), ("drafts", out.drafts, drafts_path)):
+        if not cases:
+            continue
+        verb = "would add" if args.dry_run else "added"
+        print(f"  {label}: {verb} {len(cases)} to {path}")
+        for c in cases[:10]:
+            print(f"    {c.id}  x{c.metadata['reports']}  {c.input[:70]}")
+        if not args.dry_run:
+            write_cases(path, cases)
+    if out.drafts and not args.dry_run:
+        print(
+            f"Fill in expected_output or expected_tools in {drafts_path}, then move the cases to {args.into}."
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-evals", description="Regression tests for AI agents.")
     parser.add_argument("--version", action="version", version=f"agent-evals {__version__}")
@@ -274,6 +307,17 @@ def build_parser() -> argparse.ArgumentParser:
     dash.add_argument("--port", type=int, default=8501)
     dash.add_argument("--headless", action="store_true", help="don't open a browser")
     dash.set_defaults(func=cmd_dashboard)
+
+    fb = sub.add_parser("feedback", help="turn a production feedback log into test cases")
+    fb.add_argument("log", type=Path, help="JSONL file written by agent_evals.feedback.FeedbackLog")
+    fb.add_argument("--into", type=Path, required=True, help="dataset to append ready cases to")
+    fb.add_argument(
+        "--drafts",
+        type=Path,
+        help="where cases that still need an expectation go (default <into>.drafts.jsonl)",
+    )
+    fb.add_argument("--dry-run", action="store_true", help="show what would be added, write nothing")
+    fb.set_defaults(func=cmd_feedback)
     return parser
 
 
