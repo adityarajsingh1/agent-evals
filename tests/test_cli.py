@@ -227,3 +227,31 @@ def test_feedback_adds_ready_cases_and_drafts(workdir, capsys):
 def test_feedback_missing_log(workdir, capsys):
     assert run("feedback", "nope.jsonl", "--into", "examples/weather.jsonl") == 2
     assert "no such file" in capsys.readouterr().err
+
+
+def test_improve_promotes_then_has_nothing_to_learn(workdir, capsys):
+    args = ["improve", "examples/city_agent.py:make_agent", "examples/cities.jsonl", "--prompts", "prompts"]
+    assert run(*args) == 2
+    assert "pass --init" in capsys.readouterr().err
+
+    assert run(*args, "--init", "Answer with the name of one city.", "--max-examples", "2") == 0
+    out = capsys.readouterr().out
+    assert "promoted" in out
+    assert "pass rate on 6 unseen case(s): 66.7% -> 100.0%" in out
+    assert "fixed: cold-3, cold-4" in out
+    with ResultStore("results.sqlite") as store:
+        assert len(store.list_runs()) == 2
+
+    assert run(*args) == 0
+    assert "nothing to learn" in capsys.readouterr().out
+
+    assert run("prompts", "--prompts", "prompts") == 0
+    out = capsys.readouterr().out
+    assert "2 example(s)" in out and "66.7% -> 100.0%" in out
+    assert run("prompts", "--prompts", "prompts", "--rollback") == 0
+    assert "(initial)" in capsys.readouterr().out
+
+
+def test_prompts_on_an_empty_registry(workdir, capsys):
+    assert run("prompts", "--prompts", "nothing-here") == 2
+    assert "no prompt yet" in capsys.readouterr().err

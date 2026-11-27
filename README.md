@@ -227,6 +227,36 @@ Reports of the same question (ignoring case and punctuation) become one case, an
 
 With the two new cases, the example agent drops to 4/5: it never looks up the weather for Munich, because it only knows three cities.
 
+### Learning from failures
+
+Test cases from production show what's broken. `agent-evals improve` tries to fix it, and only keeps the fix if it's actually better.
+
+Your agent's prompt lives in a prompt registry: a folder with one JSON file per version, a `CURRENT` file naming the one in use, and a `history.jsonl` of every decision. It's plain files, so it can be committed and reviewed like code. You give `improve` a function that builds your agent from a `PromptVersion` (its `messages(input)` gives chat messages, `render(input)` a single string). Each round then goes like this:
+
+1. Run the current version on the dataset.
+2. Build a candidate from what it failed. Failing cases that have an expected answer become few-shot examples, with the most reported ones first. With `--rewriter module:model`, a model also rewrites the instructions from the failures and their reasons.
+3. Run both versions on the cases the candidate hasn't seen, and promote the candidate only if its pass rate is higher and no case that passed now fails. A tie keeps the current version.
+
+The third step is the important part. A case whose answer was pasted into the prompt as an example will pass, and so will anything shown to the rewriter, so counting those would make every candidate look like a win. Those cases are held out of the comparison, and they stay held out for every later version too.
+
+```bash
+agent-evals improve examples/city_agent.py:make_agent examples/cities.jsonl \
+    --prompts examples/prompts --init "Answer with the name of one city." --max-examples 2
+# 09145db5f59f -> 7827c5c6cbc6 (+2 example(s) from failures): promoted
+#   pass rate on 6 unseen case(s): 66.7% -> 100.0%
+#   held out 2 case(s) the prompt has seen
+#   fixed: cold-3, cold-4
+
+agent-evals improve examples/city_agent.py:make_agent examples/cities.jsonl --prompts examples/prompts
+# nothing to learn: 7827c5c6cbc6 passes all 6 unseen case(s)
+```
+
+That output comes from the example agent's offline stand-in model, which reads every comparison as "which is warmer" until its prompt shows it what "colder" means. It shows how the loop works and says nothing about how much a real model gains. Set `OPENAI_API_KEY` and the same example calls a real model.
+
+Both runs of each round are saved to the results store, so they show up in `report`, `compare` and the dashboard. `agent-evals prompts --prompts examples/prompts` prints the current prompt and the history of decisions, and `--rollback` undoes the last promotion. `--min-gain 0.05` asks for at least 5 points of improvement, and `--max-regressions` allows some newly failing cases when you've decided that's worth it.
+
+The same pieces are in Python (`agent_evals.learn`): `improve`, `evaluate_candidate` to judge a candidate you wrote by hand, `PromptRewriter` and `PromptRegistry`.
+
 ## Development
 
 ```bash

@@ -1,0 +1,9 @@
+# Comparing cities. The "colder" cases came from user corrections (see agent-evals feedback).
+{"id": "warm-1", "input": "Is it warmer in Lisbon or Oslo?", "expected_output": "Lisbon"}
+{"id": "warm-2", "input": "Which is warmer, Berlin or Madrid?", "expected_output": "Madrid"}
+{"id": "warm-3", "input": "Is Rome or Helsinki warmer today?", "expected_output": "Rome"}
+{"id": "warm-4", "input": "Is it warmer in Oslo or Berlin?", "expected_output": "Berlin"}
+{"id": "cold-1", "input": "Is it colder in Berlin or Oslo?", "expected_output": "Oslo", "metadata": {"reports": 3}}
+{"id": "cold-2", "input": "Which is colder, Madrid or Lisbon?", "expected_output": "Lisbon", "metadata": {"reports": 2}}
+{"id": "cold-3", "input": "Is Helsinki or Rome colder?", "expected_output": "Helsinki", "metadata": {"reports": 1}}
+{"id": "cold-4", "input": "Is it colder in Lisbon or Berlin?", "expected_output": "Berlin"}

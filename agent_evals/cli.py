@@ -4,6 +4,8 @@ The `agent-evals` command.
     agent-evals run examples/weather_agent.py:agent examples/weather.jsonl
     agent-evals report latest
     agent-evals compare <base-run> <new-run>
+    agent-evals feedback feedback.jsonl --into dataset.jsonl
+    agent-evals improve agent.py:make_agent dataset.jsonl --prompts prompts/
 
 Runs are saved to the results store (`--db`, default `.agent-evals/results.sqlite`), so `report`
 and `compare` can refer to them by id, id prefix, or `latest` / `previous`.
@@ -245,6 +247,92 @@ def cmd_feedback(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_model(spec: str) -> Any:
+    from agent_evals.llm import FunctionModel, TextModel
+
+    obj = load_object(spec)
+    if isinstance(obj, TextModel):
+        return obj
+    if callable(obj):
+        return FunctionModel(obj)
+    raise CLIError(f"{spec} is neither a model (with .complete) nor a function")
+
+
+def cmd_improve(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from agent_evals.learn import NothingToLearn, PromptRegistry, PromptRewriter, improve
+
+    factory = load_object(args.factory)
+    if not callable(factory):
+        raise CLIError(f"{args.factory} should be a function that takes a PromptVersion and returns an agent")
+
+    def make_agent(version: Any) -> Agent:
+        agent = factory(version)
+        return agent if isinstance(agent, Agent) else FunctionAgent(agent, name=args.factory)
+
+    try:
+        cases = load_dataset(args.dataset)
+    except (DatasetError, OSError) as e:
+        raise CLIError(str(e)) from e
+    registry = PromptRegistry(args.prompts)
+    if registry.current() is None:
+        if not args.init:
+            raise CLIError(f"{args.prompts} has no prompt yet; pass --init with the current system prompt")
+        text = Path(args.init).read_text(encoding="utf-8") if Path(args.init).is_file() else args.init
+        registry.init(text.strip())
+    scorers = build_scorers([parse_scorer(s) for s in args.scorer] if args.scorer else ["exact"])
+    rewriter = PromptRewriter(_load_model(args.rewriter)) if args.rewriter else None
+    try:
+        decision = asyncio.run(
+            improve(
+                registry,
+                make_agent,
+                cases,
+                scorers,
+                rewriter=rewriter,
+                max_examples=args.max_examples,
+                min_gain=args.min_gain,
+                max_regressions=args.max_regressions,
+                concurrency=args.concurrency,
+                timeout_s=args.timeout,
+            )
+        )
+    except NothingToLearn as e:
+        print(f"nothing to learn: {e}")
+        return 0
+    if not args.no_save:
+        with ResultStore(args.db) as store:
+            for run in (decision.current_run, decision.candidate_run):
+                run.dataset = str(args.dataset)
+                store.save(run)
+    print(decision.summary())
+    return 0
+
+
+def cmd_prompts(args: argparse.Namespace) -> int:
+    from agent_evals.learn import PromptRegistry
+
+    registry = PromptRegistry(args.prompts)
+    if args.rollback:
+        version = registry.rollback()
+        print(f"current prompt is back to {version.id} ({version.note})")
+        return 0
+    current = registry.current()
+    if current is None:
+        raise CLIError(f"{args.prompts} has no prompt yet")
+    print(f"current: {current.id} ({current.note}), {len(current.examples)} example(s)")
+    print("\n" + current.system + "\n")
+    for h in registry.history():
+        if h.get("rollback"):
+            print(f"{h['at'][:16]}  rolled back to {h['candidate']}")
+            continue
+        before, after = h["pass_rate"]
+        verdict = "promoted" if h["promoted"] else "rejected"
+        print(f"{h['at'][:16]}  {h['candidate']}  {verdict:8}  {before:.1%} -> {after:.1%}  {h['note']}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-evals", description="Regression tests for AI agents.")
     parser.add_argument("--version", action="version", version=f"agent-evals {__version__}")
@@ -318,6 +406,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fb.add_argument("--dry-run", action="store_true", help="show what would be added, write nothing")
     fb.set_defaults(func=cmd_feedback)
+
+    imp = sub.add_parser("improve", help="learn a better prompt from failures, promoted only if it wins")
+    imp.add_argument("factory", help="module:attr or file.py:attr; takes a PromptVersion, returns an agent")
+    imp.add_argument("dataset", type=Path, help="JSONL file of test cases")
+    imp.add_argument("--prompts", type=Path, required=True, help="prompt registry directory")
+    imp.add_argument("--init", help="first system prompt (text or a file), when the registry is empty")
+    imp.add_argument("-s", "--scorer", action="append", metavar="NAME[:opt=value,...]", help="default: exact")
+    imp.add_argument("--rewriter", metavar="MODULE:MODEL", help="a model that rewrites the instructions too")
+    imp.add_argument("--max-examples", type=int, default=4, help="few-shot examples to add (default 4)")
+    imp.add_argument("--min-gain", type=float, default=0.0, help="pass rate gain needed to promote")
+    imp.add_argument("--max-regressions", type=int, default=0, help="newly failing cases allowed")
+    imp.add_argument("-j", "--concurrency", type=int, default=8)
+    imp.add_argument("--timeout", type=float, default=60.0, help="seconds per case")
+    imp.add_argument("--no-save", action="store_true", help="don't save the two runs to the store")
+    imp.set_defaults(func=cmd_improve)
+
+    pr = sub.add_parser("prompts", help="show the current prompt and the history of decisions")
+    pr.add_argument("--prompts", type=Path, required=True, help="prompt registry directory")
+    pr.add_argument(
+        "--rollback", action="store_true", help="go back to the version before the last promotion"
+    )
+    pr.set_defaults(func=cmd_prompts)
     return parser
 
 

@@ -12,3 +12,7 @@ htmlcov/
 # local run results
 *.sqlite
 .agent-evals/
+
+# prompt registries made by trying the examples
+examples/prompts/
+examples/*.drafts.jsonl
