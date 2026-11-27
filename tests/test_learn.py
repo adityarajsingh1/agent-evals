@@ -3,12 +3,16 @@ import pytest
 from agent_evals.agents import FunctionAgent
 from agent_evals.learn import (
     Example,
+    NothingToLearn,
     PromptRegistry,
+    PromptRewriter,
     PromptVersion,
     evaluate_candidate,
     examples_from_failures,
+    improve,
     record,
 )
+from agent_evals.llm import FunctionModel
 from agent_evals.models import AgentResult, CaseResult, Run, Score, TestCase
 from agent_evals.scorers import get_scorer
 
@@ -80,7 +84,8 @@ def test_with_examples_makes_a_child_and_replaces_same_inputs():
     w = v.with_examples([Example(input="a", output="2"), Example(input="b", output="3")])
     assert w.parent == v.id and v.parent == BASE.id
     assert [(e.input, e.output) for e in w.examples] == [("a", "2"), ("b", "3")]
-    assert v.held_out() == {"c1"} and w.held_out() == set()
+    # c1's example was replaced, but the lineage has seen its answer, so it stays held out
+    assert v.held_out() == {"c1"} and w.held_out() == {"c1"}
     assert BASE.examples == []  # the parent isn't changed
 
 
@@ -164,3 +169,69 @@ def test_rollback_with_nothing_promoted(tmp_path):
     reg.init("x")
     with pytest.raises(ValueError, match="nothing has been promoted"):
         reg.rollback()
+
+
+def test_rewriter_prompt_and_reply_parsing():
+    seen = []
+
+    def model(prompt):
+        seen.append(prompt)
+        rule = "Answer with one city. Read 'colder' as the lower temperature."
+        return f"Sure.\n<instructions>\n{rule}\n</instructions>"
+
+    rw = PromptRewriter(FunctionModel(model), max_failures=1)
+    failing = CaseResult(
+        case_id="cold-1",
+        result=AgentResult(output="Berlin"),
+        scores=[Score(name="exact", value=0, passed=False, reason="expected 'Oslo'")],
+    )
+    new = rw.rewrite(BASE.system, [(CASES[2], failing), (CASES[3], failing)])
+    assert new == "Answer with one city. Read 'colder' as the lower temperature."
+    assert "Input: Is it colder in Berlin or Oslo?" in seen[0]
+    assert "Agent answered: Berlin" in seen[0] and "Expected: Oslo" in seen[0]
+    assert "Why it failed: exact: expected 'Oslo'" in seen[0]
+    assert "Lisbon or Berlin" not in seen[0]  # only max_failures are shown
+    assert PromptRewriter(FunctionModel(lambda p: "  plain reply  ")).rewrite("x", []) == "plain reply"
+    with pytest.raises(ValueError, match="empty"):
+        PromptRewriter(FunctionModel(lambda p: "<instructions> </instructions>")).rewrite("x", [])
+
+
+async def test_improve_learns_from_failures_then_has_nothing_left(tmp_path):
+    reg = PromptRegistry(tmp_path)
+    with pytest.raises(ValueError, match="no current prompt"):
+        await improve(reg, make_agent, CASES, SCORERS)
+    first = reg.init(BASE.system)
+
+    decision = await improve(reg, make_agent, CASES, SCORERS, max_examples=1, commit="")
+    assert decision.promoted
+    assert [e.case_id for e in decision.candidate.examples] == ["cold-1"]  # the most reported
+    assert decision.candidate.note == "+1 example(s) from failures"
+    assert decision.candidate.parent == first.id
+    assert reg.current() == decision.candidate
+
+    with pytest.raises(NothingToLearn, match="passes all 4 unseen"):
+        await improve(reg, make_agent, CASES, SCORERS, commit="")
+
+
+async def test_improve_without_expected_answers_needs_a_rewriter(tmp_path):
+    reg = PromptRegistry(tmp_path)
+    reg.init(BASE.system)
+    cases = [CASES[0], CASES[1], *(c.model_copy(update={"expected_output": None}) for c in CASES[2:])]
+
+    def city_scorer(case, result):
+        # the "colder" cases are checked some other way, e.g. a judge; here a plain function
+        right = {"cold-1": "Oslo", "cold-2": "Berlin", "cold-3": "Lisbon"}
+        ok = case.id.startswith("warm") or result.output == right[case.id]
+        return Score(name="check", value=float(ok), passed=ok, reason="" if ok else "wrong city")
+
+    with pytest.raises(NothingToLearn, match="pass a rewriter"):
+        await improve(reg, make_agent, cases, [city_scorer], commit="")
+
+    new_rule = "Answer with one city. For colder, pick the lower temperature."
+    rw = PromptRewriter(FunctionModel(lambda p: new_rule), max_failures=2)
+    decision = await improve(reg, make_agent, cases, [city_scorer], rewriter=rw, commit="")
+    # the two failures the rewriter saw are held out, so it's judged on the third one
+    assert decision.candidate.seen_cases == ["cold-1", "cold-2"]
+    assert decision.held_out == ["cold-1", "cold-2"]
+    assert decision.candidate.note == "instructions rewritten from 2 failure(s)"
+    assert decision.promoted and [c.case_id for c in decision.comparison.fixes] == ["cold-3"]

@@ -15,6 +15,7 @@ like an improvement. So cases used as examples are held out of the comparison.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -26,7 +27,9 @@ from pydantic import Field
 
 from agent_evals.agents import Agent
 from agent_evals.compare import Comparison, compare_runs
-from agent_evals.models import Run, TestCase, _Model
+from agent_evals.llm import TextModel
+from agent_evals.models import CaseResult, Run, TestCase, _Model
+from agent_evals.report import failure_reason
 from agent_evals.runner import Scorer, run_eval
 
 
@@ -50,6 +53,9 @@ class PromptVersion(_Model):
     system: str
     examples: list[Example] = Field(default_factory=list)
     parent: str | None = None
+    # cases whose answers this version (or an ancestor) has seen, e.g. shown to a model rewriting
+    # the instructions; they stay out of evaluation for good
+    seen_cases: list[str] = Field(default_factory=list)
     # how this version was made, e.g. "+2 examples from failures"
     note: str = ""
     created_at: datetime = Field(default_factory=_now)
@@ -72,7 +78,8 @@ class PromptVersion(_Model):
         return "\n\n".join(parts)
 
     def held_out(self) -> set[str]:
-        return {e.case_id for e in self.examples if e.case_id}
+        """Case ids this version can't be fairly tested on."""
+        return set(self.seen_cases) | {e.case_id for e in self.examples if e.case_id}
 
     def with_examples(self, examples: Sequence[Example], note: str = "") -> PromptVersion:
         """A child version with these examples added (an input already in the prompt is replaced)."""
@@ -82,6 +89,8 @@ class PromptVersion(_Model):
             system=self.system,
             examples=[*kept, *examples],
             parent=self.id,
+            # a replaced example's case was still seen by the lineage
+            seen_cases=sorted(self.held_out() - {e.case_id for e in examples if e.case_id}),
             note=note or f"+{len(examples)} example(s)",
         )
 
@@ -205,7 +214,7 @@ class Decision:
             f"{self.current_run.pass_rate:.1%} -> {self.candidate_run.pass_rate:.1%}",
         ]
         if self.held_out:
-            lines.append(f"  held out {len(self.held_out)} case(s) used as examples")
+            lines.append(f"  held out {len(self.held_out)} case(s) the prompt has seen")
         if cmp.fixes:
             lines.append("  fixed: " + ", ".join(c.case_id for c in cmp.fixes))
         if cmp.regressions:
@@ -234,7 +243,7 @@ async def evaluate_candidate(
     held_out = candidate.held_out() | current.held_out()
     unseen = [c for c in cases if c.id not in held_out]
     if not unseen:
-        raise ValueError("every case is used as an example, so there's nothing left to evaluate on")
+        raise ValueError("the prompt has seen every case, so there's nothing left to evaluate on")
     base = await run_eval(make_agent(current), unseen, scorers, config={"prompt": current.id}, **run_kwargs)
     head = await run_eval(
         make_agent(candidate), unseen, scorers, config={"prompt": candidate.id}, **run_kwargs
@@ -275,3 +284,107 @@ def record(registry: PromptRegistry, decision: Decision) -> None:
             "reasons": decision.reasons,
         }
     )
+
+
+REWRITE_PROMPT = """You are improving the instructions (system prompt) of an AI agent.
+
+Current instructions:
+<instructions>
+{system}
+</instructions>
+
+The agent got these cases wrong:
+
+{failures}
+
+Write new instructions that fix the general problem behind these failures without breaking what
+already works. Keep everything in the current instructions that is still right. Don't copy the
+specific questions or answers into the instructions: describe the rule instead.
+
+Reply with only the new instructions inside <instructions></instructions> tags."""
+
+
+class PromptRewriter:
+    """Asks a model to rewrite the instructions from the failures, as a second way (besides
+    few-shot examples) to make a candidate. The cases it was shown are held out afterwards."""
+
+    def __init__(self, model: TextModel, max_failures: int = 8) -> None:
+        self.model = model
+        self.max_failures = max_failures
+
+    def prompt(self, system: str, failures: Sequence[tuple[TestCase, CaseResult]]) -> str:
+        blocks = []
+        for i, (case, result) in enumerate(failures[: self.max_failures], start=1):
+            lines = [f"{i}. Input: {case.input}", f"   Agent answered: {result.result.output or '(nothing)'}"]
+            if case.expected_output:
+                lines.append(f"   Expected: {case.expected_output}")
+            lines.append(f"   Why it failed: {failure_reason(result)}")
+            blocks.append("\n".join(lines))
+        return REWRITE_PROMPT.format(system=system.strip(), failures="\n\n".join(blocks))
+
+    def rewrite(self, system: str, failures: Sequence[tuple[TestCase, CaseResult]]) -> str:
+        reply = self.model.complete(self.prompt(system, failures))
+        match = re.search(r"<instructions>(.*?)</instructions>", reply, re.S)
+        new = (match.group(1) if match else reply).strip()
+        if not new:
+            raise ValueError("the rewriter returned empty instructions")
+        return new
+
+
+class NothingToLearn(Exception):
+    """The current version passes everything it can be tested on, or its failures can't teach a
+    candidate anything (no expected answers and no rewriter)."""
+
+
+async def improve(
+    registry: PromptRegistry,
+    make_agent: Callable[[PromptVersion], Agent],
+    cases: Sequence[TestCase],
+    scorers: Sequence[Scorer] = (),
+    *,
+    rewriter: PromptRewriter | None = None,
+    max_examples: int = 4,
+    min_gain: float = 0.0,
+    max_regressions: int = 0,
+    **run_kwargs: Any,
+) -> Decision:
+    """One turn of the loop: find what the current version fails, build a candidate from it,
+    evaluate the two on unseen cases, and record the decision (promoting the candidate if it won).
+    """
+    current = registry.current()
+    if current is None:
+        raise ValueError(f"{registry.path} has no current prompt; start it with PromptRegistry.init()")
+    unseen = [c for c in cases if c.id not in current.held_out()]
+    run = await run_eval(make_agent(current), unseen, scorers, config={"prompt": current.id}, **run_kwargs)
+    by_id = {c.id: c for c in unseen}
+    failures = [(by_id[r.case_id], r) for r in run.cases if not r.passed]
+    if not failures:
+        raise NothingToLearn(f"{current.id} passes all {len(run.cases)} unseen case(s)")
+
+    examples = examples_from_failures(run, unseen, limit=max_examples)
+    if not examples and rewriter is None:
+        raise NothingToLearn(
+            f"{len(failures)} failing case(s), but none has an expected_output to learn from; "
+            "pass a rewriter to learn from the failure reasons"
+        )
+    candidate = current.with_examples(examples) if examples else current.with_examples([])
+    notes = [f"+{len(examples)} example(s) from failures"] if examples else []
+    if rewriter is not None:
+        shown = failures[: rewriter.max_failures]
+        candidate.system = rewriter.rewrite(current.system, shown)
+        candidate.seen_cases = sorted(set(candidate.seen_cases) | {c.id for c, _ in shown})
+        notes.append(f"instructions rewritten from {len(shown)} failure(s)")
+    candidate.note = ", ".join(notes)
+
+    decision = await evaluate_candidate(
+        make_agent,
+        current,
+        candidate,
+        cases,
+        scorers,
+        min_gain=min_gain,
+        max_regressions=max_regressions,
+        **run_kwargs,
+    )
+    record(registry, decision)
+    return decision
